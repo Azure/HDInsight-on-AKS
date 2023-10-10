@@ -1,0 +1,166 @@
+name: Data Product Deployment
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - code/*
+      - infra/*
+      - .ado/workflows/dataProductDeployment.yml
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - code/*
+      - infra/*
+      - .ado/workflows/dataProductDeployment.yml
+
+variables:
+  AZURE_RESOURCE_MANAGER_CONNECTION_NAME: "integration-product-service-connection" # Update to '{resourceManagerConnectionName}'
+  AZURE_SUBSCRIPTION_ID: "2150d511-458f-43b9-8691-6819ba2e6c7b"                    # Update to '{dataLandingZoneSubscriptionId}'
+  AZURE_RESOURCE_GROUP_NAME: "dlz01-dev-dp001"                                     # Update to '{dataLandingZoneName}-rg'
+  AZURE_LOCATION: "northeurope"                                                    # Update to '{regionName}'
+
+stages:
+  - stage: Validation
+    displayName: "Validation of IaC templates"
+    jobs:
+      - job: Validation
+        displayName: "Validation of IaC templates"
+        continueOnError: false
+        pool:
+          vmImage: "ubuntu-latest"
+
+        steps:
+          # Checkout code
+          - checkout: self
+            name: checkout_repository
+            displayName: "Checkout repository"
+            submodules: true
+            lfs: false
+            clean: true
+            continueOnError: false
+            enabled: true
+
+          # Generate Password 001
+          - task: PowerShell@2
+            name: generate_password_001
+            displayName: Generate Password 001
+            enabled: true
+            continueOnError: false
+            inputs:
+              targetType: "filePath"
+              filePath: "$(System.DefaultWorkingDirectory)/code/GeneratePassword.ps1"
+              errorActionPreference: "stop"
+              failOnStderr: false
+              ignoreLASTEXITCODE: false
+              pwsh: true
+
+          # Deploy Data Product - validation
+          - task: AzureResourceManagerTemplateDeployment@3
+            name: data_product_validation
+            displayName: Deploy Data Product - validation
+            enabled: true
+            continueOnError: false
+            inputs:
+              deploymentScope: "Resource Group"
+              azureResourceManagerConnection: ${{ variables.AZURE_RESOURCE_MANAGER_CONNECTION_NAME }}
+              subscriptionId: ${{ variables.AZURE_SUBSCRIPTION_ID }}
+              action: "Create Or Update Resource Group"
+              resourceGroupName: ${{ variables.AZURE_RESOURCE_GROUP_NAME }}
+              location: ${{ variables.AZURE_LOCATION }}
+              templateLocation: "Linked artifact"
+              csmFile: "$(System.DefaultWorkingDirectory)/infra/main.json"
+              csmParametersFile: "$(System.DefaultWorkingDirectory)/infra/params.dev.json"
+              deploymentMode: "Validation"
+              overrideParameters: >
+                -administratorPassword "$(password)"
+
+          # Deploy Data Product - what-if
+          - task: AzureCLI@2
+            name: data_product_whatif
+            displayName: Deploy Data Product - what-if
+            enabled: true
+            continueOnError: false
+            inputs:
+              azureSubscription: ${{ variables.AZURE_RESOURCE_MANAGER_CONNECTION_NAME }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                az account set `
+                  --subscription ${{ variables.AZURE_SUBSCRIPTION_ID }}
+                
+                az deployment group what-if `
+                  --resource-group ${{ variables.AZURE_RESOURCE_GROUP_NAME }} `
+                  --exclude-change-types Ignore NoChange Unsupported `
+                  --mode "Incremental" `
+                  --template-file "$(System.DefaultWorkingDirectory)/infra/main.json" `
+                  --parameters "$(System.DefaultWorkingDirectory)/infra/params.dev.json" administratorPassword="$(password)" `
+                  --result-format "FullResourcePayloads"
+                
+              powerShellErrorActionPreference: "stop"
+              addSpnToEnvironment: false
+              useGlobalConfig: false
+              failOnStandardError: false
+              powerShellIgnoreLASTEXITCODE: false
+
+  - stage: Deployment
+    displayName: "Deployment of IaC templates"
+    dependsOn: Validation
+    # condition: and(succeeded(), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI'))
+    
+    jobs:
+      - job: Deployment
+        displayName: "Deployment of IaC templates"
+        continueOnError: false
+        pool:
+          vmImage: "ubuntu-latest"
+
+        steps:
+          # Checkout repository
+          - checkout: self
+            name: checkout_repository
+            displayName: "Checkout repository"
+            submodules: true
+            lfs: false
+            clean: true
+            continueOnError: false
+            enabled: true
+
+          # Generate Password 001
+          - task: PowerShell@2
+            name: generate_password_001
+            displayName: Generate Password 001
+            enabled: true
+            continueOnError: false
+            inputs:
+              targetType: "filePath"
+              filePath: "$(System.DefaultWorkingDirectory)/code/GeneratePassword.ps1"
+              errorActionPreference: "stop"
+              failOnStderr: false
+              ignoreLASTEXITCODE: false
+              pwsh: true
+
+          # Deploy Data Product
+          - task: AzureResourceManagerTemplateDeployment@3
+            name: data_product_deployment
+            displayName: Deploy Data Product
+            enabled: true
+            continueOnError: false
+            inputs:
+              deploymentScope: "Resource Group"
+              azureResourceManagerConnection: ${{ variables.AZURE_RESOURCE_MANAGER_CONNECTION_NAME }}
+              subscriptionId: ${{ variables.AZURE_SUBSCRIPTION_ID }}
+              action: "Create Or Update Resource Group"
+              resourceGroupName: ${{ variables.AZURE_RESOURCE_GROUP_NAME }}
+              location: ${{ variables.AZURE_LOCATION }}
+              templateLocation: "Linked artifact"
+              csmFile: "$(System.DefaultWorkingDirectory)/infra/main.json"
+              csmParametersFile: "$(System.DefaultWorkingDirectory)/infra/params.dev.json"
+              deploymentMode: "Incremental"
+              overrideParameters: >
+                -administratorPassword "$(password)"
